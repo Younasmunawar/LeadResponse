@@ -27,6 +27,7 @@ let answers = {};
 let finalizing = false;
 
 const AUDIO = {
+  opening: "/audio/01-opening.mp3",
   voicemail: "/audio/02-voicemail.mp3",
   buyLease: "/audio/q-buy-or-lease.mp3",
   purpose: "/audio/q-personal-or-invest.mp3",
@@ -34,6 +35,7 @@ const AUDIO = {
   budget: "/audio/q-budget.mp3",
   timeline: "/audio/q-timeline.mp3",
   payment: "/audio/q-cash-or-finance.mp3",
+  whatsapp: "/audio/q-whatsapp.mp3",
   ackPerfect: "/audio/06-ack-perfect.mp3",
   ackHelpful: "/audio/07-ack-helpful.mp3",
   ackThanks: "/audio/08-ack-understood-thank-you.mp3",
@@ -55,7 +57,8 @@ const baseSteps = [
   { key: "preferredArea", audio: AUDIO.area, label: "Preferred area" },
   { key: "budget", audio: AUDIO.budget, label: "Budget" },
   { key: "timeline", audio: AUDIO.timeline, label: "Timeline" },
-  { key: "paymentMethod", audio: AUDIO.payment, label: "Cash or finance", buyOnly: true }
+  { key: "paymentMethod", audio: AUDIO.payment, label: "Cash or finance", buyOnly: true },
+  { key: "whatsappConsent", audio: AUDIO.whatsapp, label: "WhatsApp confirmation" }
 ];
 
 function setStatus(message, isError = false) {
@@ -224,6 +227,15 @@ function normalizePurpose(text) {
   return text.trim() || "unknown";
 }
 
+function normalizeConsent(text) {
+  const t = String(text || "").toLowerCase().replace(/[^a-z0-9\s']/g, " ").replace(/\s+/g, " ").trim();
+
+  if (/\b(no problem|sure thing|of course|go ahead|sounds good)\b/.test(t)) return "yes";
+  if (/\b(yes|yeah|yep|yup|sure|okay|ok|absolutely|certainly|definitely|please do|continue|go ahead|of course)\b/.test(t)) return "yes";
+  if (/\b(no|nope|nah|not now|do not|don't|stop|not interested|busy|can't|cannot)\b/.test(t)) return "no";
+  return "unknown";
+}
+
 function normalizePayment(text) {
   const t = text.toLowerCase();
   if (/\b(cash|full payment|outright)\b/.test(t)) return "cash";
@@ -235,11 +247,12 @@ function parseAnswer(step, text) {
   if (step.key === "intent") return normalizeIntent(text);
   if (step.key === "purpose") return normalizePurpose(text);
   if (step.key === "paymentMethod") return normalizePayment(text);
+  if (step.key === "whatsappConsent") return normalizeConsent(text);
   return text.trim() || "unknown";
 }
 
 function isValidAnswer(step, parsed) {
-  if (["intent", "paymentMethod"].includes(step.key)) return parsed !== "unknown";
+  if (["intent", "paymentMethod", "whatsappConsent"].includes(step.key)) return parsed !== "unknown";
   return String(parsed || "").trim().length >= 2;
 }
 
@@ -318,6 +331,33 @@ async function runConversation() {
   try {
     await postJson(`/api/leads/${currentLeadId}/call-start`, { callId: `recorded-${Date.now()}` }, "PATCH");
 
+    // The supplied opening recording always plays first. The qualification
+    // continues only after an affirmative response.
+    addTranscript("Kenny", "Opening and permission to continue");
+    await playAudio(AUDIO.opening);
+    if (!callRunning) return;
+
+    const consentStep = { key: "consent", label: "Permission to continue" };
+    retryCount = 0;
+    let consentRaw = await captureAnswer(consentStep);
+    addTranscript("Customer", consentRaw);
+    let consent = normalizeConsent(consentRaw);
+
+    if (consent === "unknown") {
+      await playAudio(AUDIO.clarifier);
+      retryCount = 0;
+      consentRaw = await captureAnswer(consentStep);
+      addTranscript("Customer", consentRaw);
+      consent = normalizeConsent(consentRaw);
+    }
+
+    answers.consent = consent;
+
+    if (consent !== "yes") {
+      await finishDeclinedCall(consent === "no" ? "Customer declined to continue." : "Customer did not confirm consent.");
+      return;
+    }
+
     while (callRunning) {
       const steps = currentSteps();
       if (activeStepIndex >= steps.length) break;
@@ -353,6 +393,44 @@ async function runConversation() {
     console.error(error);
     setStatus(`Call flow error: ${error.message}`, true);
     await finishRecordedCall(true);
+  }
+}
+
+
+async function finishDeclinedCall(reason) {
+  if (finalizing) return;
+  finalizing = true;
+  callRunning = false;
+  waitingForAnswer = false;
+  try { recognition?.stop?.(); } catch {}
+
+  addTranscript("System", reason);
+
+  try {
+    await playAudio(AUDIO.goodbye);
+  } catch (error) {
+    console.warn("Goodbye audio error:", error.message);
+  }
+
+  setCallState("Call ended. Saving the response...");
+
+  try {
+    const result = await postJson(`/api/leads/${currentLeadId}/recorded-complete`, {
+      transcript: transcriptLines.join("\n"),
+      answers,
+      leadQuality: "cold",
+      callerSentiment: "negative",
+      declinedAtOpening: true
+    });
+
+    setStatus(result.message || "Call ended and response saved.");
+    setCallState("Completed");
+  } catch (error) {
+    setStatus(`Call ended, but saving failed: ${error.message}`, true);
+    setCallState("Save failed");
+  } finally {
+    endCallButton.disabled = true;
+    startCallButton.disabled = false;
   }
 }
 

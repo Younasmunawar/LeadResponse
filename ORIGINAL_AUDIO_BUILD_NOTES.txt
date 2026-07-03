@@ -17,3 +17,10 @@ IMPORTANT
 - Browser microphone permission is required.
 - The first live question is the supplied Buy or Lease recording because no separate live-call opening recording was supplied.
 - No voice cloning or synthetic Kenny voice is used.
+
+V6 update:
+- Added 01-opening.mp3 and it always plays before qualification.
+- Qualification continues only for affirmative responses such as yes, sure, of course, okay, absolutely, or go ahead.
+- A clear no/not interested/stop response ends the call immediately, plays goodbye, and saves the declined lead.
+- Replaced the old same-name q-buy-or-lease, q-personal-or-invest, q-budget, and q-timeline files with the newly supplied recordings.
+- Added q-whatsapp.mp3 as the final qualification question.

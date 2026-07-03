@@ -337,7 +337,17 @@ app.post("/api/leads/:id/recorded-complete", async (req, res) => {
           ? "Follow up with suitable options and confirm the remaining requirements."
           : "Add the customer to the follow-up list and confirm interest before assigning an agent.";
     lead.bestFollowUpTime = "Confirm directly with the customer";
-    lead.whatsappNumber = lead.phone || "unknown";
+    lead.whatsappNumber =
+      answers.whatsappConsent === "yes"
+        ? (lead.phone || "unknown")
+        : answers.whatsappConsent === "no"
+          ? "not confirmed"
+          : (lead.phone || "unknown");
+
+    if (req.body?.declinedAtOpening === true) {
+      lead.nextStep = "Customer declined the recorded qualification at the opening. Follow up only if appropriate.";
+      lead.bestFollowUpTime = "Do not call automatically";
+    }
     lead.status = "completed";
     lead.callEndedAt = new Date();
     lead.processingError = "";
